@@ -1,0 +1,14 @@
+# Environment
+.env
+venv/
+__pycache__/
+
+# Data
+*.csv
+*.csv.backup
+
+# Logs
+*.log
+
+# System files
+.DS_Store

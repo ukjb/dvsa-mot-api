@@ -1,0 +1,7 @@
+flask==3.0.2
+requests==2.31.0
+python-dotenv==1.0.1
+pandas==2.2.1
+numpy==1.26.4
+python-jwt==4.1.0
+gunicorn==21.2.0
