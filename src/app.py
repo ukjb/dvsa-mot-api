@@ -8,6 +8,7 @@ import pandas as pd
 import numpy as np
 from dotenv import load_dotenv
 from pathlib import Path
+BASE_DIR = Path(__file__).resolve().parent
 
 # Load environment variables
 load_dotenv()
@@ -38,29 +39,17 @@ class RarityScoreCalculator:
     def __init__(self, csv_path='vehicle_statistics.csv'):
         """Initialize the rarity score calculator with vehicle statistics data"""
         try:
-            # First, let's check if the file exists
-            if not os.path.exists(csv_path):
-                raise FileNotFoundError(f"CSV file not found at path: {csv_path}")
+            absolute_csv_path = Path(__file__).resolve().parent / csv_path
             
-            # Try reading with explicit encoding and separator
-            self.df = pd.read_csv(csv_path, encoding='utf-8', sep=',')
+            if not os.path.exists(absolute_csv_path):
+                raise FileNotFoundError(f"CSV file not found at path: {absolute_csv_path}")
             
-            # Log DataFrame info for debugging
-            logger.info(f"DataFrame columns: {self.df.columns.tolist()}")
-            logger.info(f"DataFrame shape: {self.df.shape}")
-            
-            if self.df.empty:
-                raise ValueError("DataFrame is empty after loading")
+            self.df = pd.read_csv(absolute_csv_path, encoding='utf-8')
+            logger.info(f"Initial data load - shape: {self.df.shape}")
             
             self._process_data()
             logger.info("Successfully loaded vehicle statistics data")
             
-        except pd.errors.EmptyDataError:
-            logger.error("The CSV file is empty")
-            raise
-        except pd.errors.ParserError as e:
-            logger.error(f"Error parsing CSV file: {str(e)}")
-            raise
         except Exception as e:
             logger.error(f"Error loading vehicle statistics: {str(e)}")
             raise
@@ -70,23 +59,32 @@ class RarityScoreCalculator:
         try:
             # Get the latest quarter's data
             quarter_columns = [col for col in self.df.columns if 'Q' in col and col[0].isdigit()]
-            if not quarter_columns:
-                raise ValueError("No quarter columns found in the data")
+            self.latest_quarter = max(quarter_columns)
+            logger.info(f"Using {self.latest_quarter} as the latest quarter")
             
-            latest_quarter = max(quarter_columns)
-            logger.info(f"Using {latest_quarter} as the latest quarter")
+            # Create clean model names
+            self.df['clean_model'] = self.df.apply(
+                lambda row: row['GenModel'].replace(row['Make'] + ' ', '', 1) if pd.notnull(row['GenModel']) else '',
+                axis=1
+            )
             
-            # Calculate total vehicles per make/model combination
-            self.df['total_vehicles'] = self.df[latest_quarter]
+            # Group by Make and clean_model, combining Licensed and SORN for the latest quarter only
+            grouped_df = self.df.groupby(['Make', 'clean_model', 'LicenceStatus'])[self.latest_quarter].sum().reset_index()
+            
+            # Sum Licensed and SORN vehicles
+            final_df = grouped_df.groupby(['Make', 'clean_model'])[self.latest_quarter].sum().reset_index()
             
             # Calculate rarity scores
-            total_vehicles = self.df['total_vehicles'].sum()
-            self.df['rarity_score'] = 1 - (self.df['total_vehicles'] / total_vehicles)
+            total_vehicles = final_df[self.latest_quarter].sum()
+            final_df['total_vehicles'] = final_df[self.latest_quarter]
+            final_df['rarity_score'] = (1 - (final_df[self.latest_quarter] / total_vehicles)) * 100
             
-            # Normalize scores to 0-100 scale
-            self.df['rarity_score'] = (self.df['rarity_score'] * 100).round(2)
+            # Log statistics
+            logger.info(f"Total unique makes: {final_df['Make'].nunique()}")
+            logger.info(f"Total vehicles in latest quarter: {total_vehicles:,}")
+            logger.info(f"Average vehicles per model: {final_df['total_vehicles'].mean():.0f}")
             
-            logger.info("Data processing completed successfully")
+            self.df = final_df
             
         except Exception as e:
             logger.error(f"Error in _process_data: {str(e)}")
@@ -95,29 +93,37 @@ class RarityScoreCalculator:
     def get_rarity_score(self, make, model):
         """Get the rarity score for a specific make and model"""
         try:
-            # Log the search parameters
             logger.info(f"Searching for Make: {make}, Model: {model}")
             
-            # Try exact match first
-            mask = (self.df['Make'].str.upper() == make.upper()) & \
-                  (self.df['Model'].str.upper() == model.upper())
+            # Convert to uppercase for case-insensitive matching
+            make = make.upper()
+            model = model.upper()
             
-            if not mask.any():
-                # Try partial match on model
-                mask = (self.df['Make'].str.upper() == make.upper()) & \
-                      (self.df['Model'].str.upper().str.contains(model.upper(), na=False))
+            # Try exact match
+            mask = (self.df['Make'].str.upper() == make) & \
+                  (self.df['clean_model'].str.upper() == model)
             
-            if mask.any():
-                vehicle_data = self.df[mask].iloc[0]
-                score = vehicle_data['rarity_score']
-                total_count = vehicle_data['total_vehicles']
-                percentile = (self.df['rarity_score'] <= score).mean() * 100
+            matches = self.df[mask]
+            
+            if len(matches) > 0:
+                vehicle_data = matches.iloc[0]
                 
-                return {
-                    'score': float(score),
+                # Calculate percentile (lower score = more common)
+                percentile = (self.df['rarity_score'] >= vehicle_data['rarity_score']).mean() * 100
+                
+                result = {
+                    'score': float(vehicle_data['rarity_score']),
                     'percentile': round(float(percentile), 2),
-                    'total_count': int(total_count)
+                    'total_count': int(vehicle_data['total_vehicles']),
+                    'quarter': self.latest_quarter
                 }
+                
+                logger.info(f"Match found for {make} {model}:")
+                logger.info(f"Count in {self.latest_quarter}: {result['total_count']:,}")
+                logger.info(f"Rarity score: {result['score']:.2f}")
+                logger.info(f"Rarer than {result['percentile']:.2f}% of vehicles")
+                
+                return result
             
             logger.info(f"No match found for Make: {make}, Model: {model}")
             return None
@@ -125,7 +131,7 @@ class RarityScoreCalculator:
         except Exception as e:
             logger.error(f"Error calculating rarity score: {str(e)}")
             return None
-
+            
 # Initialize rarity calculator
 try:
     rarity_calculator = RarityScoreCalculator()
@@ -200,20 +206,29 @@ def get_mot_data(vehicle_registration):
             make = vehicle.get('make')
             model = vehicle.get('model')
             
-            # Debug logging for make and model
+            # Enhanced debug logging
             logger.info(f"Vehicle data received - Make: {make}, Model: {model}")
+            logger.info(f"Rarity calculator initialized: {rarity_calculator is not None}")
             
             if make and model and rarity_calculator:
-                # Add debug logging for the DataFrame
-                logger.info("Sample of available makes in statistics:")
+                # Log the DataFrame state
                 if hasattr(rarity_calculator, 'df'):
-                    logger.info(f"Unique makes in statistics: {rarity_calculator.df['Make'].unique()[:5]}")  # Show first 5
-                    logger.info(f"Sample models for this make: {rarity_calculator.df[rarity_calculator.df['Make'].str.upper() == make.upper()]['Model'].unique()[:5] if make else 'No make found'}")
+                    logger.info(f"DataFrame shape: {rarity_calculator.df.shape}")
+                    logger.info(f"DataFrame columns: {rarity_calculator.df.columns.tolist()}")
+                    logger.info(f"Searching for Make: {make.upper()} in available makes: {rarity_calculator.df['Make'].str.upper().unique()[:5]}")
+                    
+                    # Log matches in DataFrame
+                    make_matches = rarity_calculator.df[rarity_calculator.df['Make'].str.upper() == make.upper()]
+                    logger.info(f"Found {len(make_matches)} matches for make {make}")
+                    if not make_matches.empty:
+                        logger.info(f"Available models for {make}: {make_matches['Model'].unique()[:5]}")
                 
                 rarity_info = rarity_calculator.get_rarity_score(make, model)
+                logger.info(f"Rarity info result: {rarity_info}")
                 
                 if rarity_info:
                     vehicle_data[0]['rarity_info'] = rarity_info
+                    logger.info("Successfully added rarity info to response")
                 else:
                     logger.info(f"No rarity info found for Make: {make}, Model: {model}")
                     vehicle_data[0]['rarity_info'] = {
@@ -223,7 +238,10 @@ def get_mot_data(vehicle_registration):
                         'note': f'Vehicle not found in statistics database (Make: {make}, Model: {model})'
                     }
             else:
-                logger.info(f"Missing data - Make: {make}, Model: {model}, Calculator initialized: {rarity_calculator is not None}")
+                logger.warning("Missing required data for rarity calculation:")
+                logger.warning(f"Make present: {bool(make)}")
+                logger.warning(f"Model present: {bool(model)}")
+                logger.warning(f"Rarity calculator initialized: {bool(rarity_calculator)}")
         
         logger.info(f"Successfully retrieved MOT data for {vehicle_registration}")
         return jsonify(vehicle_data)
