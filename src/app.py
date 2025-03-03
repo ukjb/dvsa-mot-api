@@ -36,7 +36,7 @@ class Config:
     }
 
 class RarityScoreCalculator:
-    def __init__(self, csv_path='vehicle_statistics.csv'):
+    def __init__(self, csv_path='cleaned_vehicle_statistics.csv'):
         """Initialize the rarity score calculator with vehicle statistics data"""
         try:
             absolute_csv_path = Path(__file__).resolve().parent / csv_path
