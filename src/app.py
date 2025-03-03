@@ -69,7 +69,7 @@ class RarityScoreCalculator:
             )
             
             # Group by Make and clean_model, combining Licensed and SORN for the latest quarter only
-            grouped_df = self.df.groupby(['Make', 'clean_model', 'LicenceStatus'])[self.latest_quarter].sum().reset_index()
+            grouped_df = self.df.groupby(['Make', 'clean_model'])[self.latest_quarter].sum().reset_index()
             
             # Sum Licensed and SORN vehicles
             final_df = grouped_df.groupby(['Make', 'clean_model'])[self.latest_quarter].sum().reset_index()
